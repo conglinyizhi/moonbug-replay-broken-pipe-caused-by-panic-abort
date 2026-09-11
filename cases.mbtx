@@ -45,7 +45,6 @@ struct Case {
 ///|
 struct Ctx {
   moon : String
-  home : String
   extra : Map[String, String]
   tmpdir : String
 }
@@ -94,8 +93,9 @@ async fn count_moon_cores() -> Int {
   if tool == "" { return -1 }
   let (code, out, _) = @process.collect_output(tool, ["list", "--no-pager"])
   if code != 0 { return -1 }
+  let lines = try! out.text().split("\n").collect()
   let mut n = 0
-  for line in try! out.text().split("\n").collect() {
+  for line in lines {
     if line.contains("/.moon/bin/moon") { n = n + 1 }
   }
   n
@@ -240,7 +240,6 @@ async fn main {
   let tmpdir = @fs.tmpdir(prefix="bp-")
   let ctx = {
     moon: moon_exe(),
-    home: env_or("HOME", "/root"),
     extra: { "PATH": env_or("PATH", "/usr/bin:/bin"), "HOME": env_or("HOME", "/root") },
     tmpdir,
   }
