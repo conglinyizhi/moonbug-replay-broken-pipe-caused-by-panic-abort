@@ -28,25 +28,32 @@ make fixed      # 修复验收 lane（上游修好后才会 PASS）
 make cores      # 打印最近一次 moon core 的签名与 panic 文本
 ```
 
-不想过 make 就直接跑：
+harness 是一个单文件 `.mbtx`：`moon run cases.mbtx -- <子命令>`，
+没有 `cases.sh`，也没有 `repro.sh`。它**自己开管道**：给子进程的 stdout/stderr 接上
+一根管道，读几行后把**读端关掉**，等价于 `| head -n N` 提前退出 ——
+这样复现机制不再依赖 shell 的 `|`。
 
 ```bash
-./repro.sh              # 人看的：逐条演示 + 打印 core 签名
-./cases.sh list         # 机器看的：列出用例及其自带预期
-./cases.sh run head-1   # 跑单个用例
-./cases.sh lane bug     # 跑整条 lane
+moon run cases.mbtx -- verify
+moon run cases.mbtx -- bug
 ```
+
+harness 用 `moonbitlang/async@0.21.3` 的 process API（`read_from_process` /
+`ReadFromProcess::close`）。因为 `.mbtx` 的依赖要靠 registry 索引解析，
+**全新环境需要先同步一次索引**；`make` 的各 lane 都依赖 `make deps`
+（内部 `moon update --quiet`），所以一般不用手动做。离线时 `deps` 会失败但不中断。
 
 ## 用例
 
-| case | 管道写法 | 自带预期 |
-|---|---|---|
-| `head-1` | `2>&1 \| head -n 1` | 134 |
-| `head-3` | `2>&1 \| head -n 3` | 134 |
-| `redirect` | `> LOG 2>&1` | 0 |
-| `pipe-cat` | `2>&1 \| cat > /dev/null` | 0 |
-| `pipe-tail` | `2>&1 \| tail -n 5` | 0 |
-| `head-drain` | `2>&1 \| { head -n 3; cat >/dev/null; }` | 0 |
+| case | harness 做的事 | 等价 shell 写法 | 自带预期 |
+|---|---|---|---|
+| `head-1` | 读 1 行后关读端 | `2>&1 \| head -n 1` | 134 |
+| `head-3` | 读 3 行后关读端 | `2>&1 \| head -n 3` | 134 |
+| `drain-all` | 读到 EOF | `2>&1 \| cat` / `\| tail -n 5` | 0 |
+| `head-drain` | 读 3 行后继续抽干 | `2>&1 \| { head -n 3; cat >/dev/null; }` | 0 |
+| `redirect` | stderr 写文件 | `> LOG 2>&1` | 0 |
+
+（原来的 `pipe-cat` / `pipe-tail` 在原生管道里和 `drain-all` 是同一件事，已合并。）
 
 阈值是零：只要读端先退出，moon 的下一次 stderr 写入就失败。
 输出体量无关 —— `a.mbt` 只留 1 个未使用函数（stderr 258 字节）同样崩。

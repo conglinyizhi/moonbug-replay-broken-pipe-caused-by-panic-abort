@@ -1,75 +1,58 @@
-# moon broken-pipe abort —— 复现 / 绕过 / 修复验收
-#
-#   moon 在 stderr 管道读端提前退出时拿到 EPIPE，Rust 的 eprintln! 会 panic；
-#   而该二进制以 panic=abort 构建，于是普通的输出失败被升格成 abort()：
-#     exit 134 / Signal: 6 (ABRT) si_code: SI_TKILL / 每次留下一个 core
-#
-#   证据（core 内 panic 原文）：
-#     failed printing to stderr: Broken pipe (os error 32)
-#
-#   本 Makefile 就是那条线的可执行规格：一条 lane 去撞它，一条 lane 绕它。
+# moon 在 stderr 断管时 abort —— 用 .mbtx 驱动，几乎不靠 shell
 
 SHELL  := /bin/bash
 MOON   ?= $(HOME)/.moon/bin/moon
-TARGET ?= native
-LOG    ?= /tmp/moonbug-replay.log
+FIX_CC ?= gcc
 
-export MOON TARGET LOG
+export MOON FIX_CC
 
-.PHONY: help all verify bug workaround fixed cases cores clean
+# MOON_CC 是给「编译这个 .mbtx 自己」用的。
+# 复现用的 moon check 不需要编译器，所以子进程环境里不带它。
+RUN = MOON_CC="$(FIX_CC)" "$(MOON)" run --target native cases.mbtx --
+
+.PHONY: help all deps verify bug workaround fixed cases diagnose clean
 
 help:
 	@printf '%s\n' \
-	  'moon broken-pipe abort —— 复现 / 绕过 / 修复验收' \
+	  'moon stderr 断管 → SIGABRT（.mbtx 驱动，原生管道）' \
 	  '' \
-	  '  make verify      bug lane + workaround lane，本地应全绿' \
-	  '  make bug         命中问题 lane：断言 exit 134（128 + 6 SIGABRT）' \
-	  '  make workaround  绕过 lane：断言 exit 0（不触发 EPIPE）' \
-	  '  make fixed       修复验收 lane：上游修好后才 PASS（当前预期 FAIL）' \
-	  '  make cases       列出用例及其自带预期' \
-	  '  make cores       打印最近一次 moon core 的签名与 panic 文本' \
-	  '  make clean       清掉 _build 与日志' \
+	  '  make verify      命中问题 lane + 绕过 lane，本地应全绿' \
+	  '  make bug         命中问题 lane：关读端 → exit 134，并报 core 增量' \
+	  '  make workaround  绕过 lane：读干 / 落盘 → exit 0' \
+	  '  make fixed       修复验收 lane：关读端也不再 abort（上游修好后转 PASS）' \
+	  '  make cases       列出用例' \
+	  '  make diagnose    打印环境证据' \
+	  '  make deps        同步 registry 索引（首次运行需要）' \
+	  '  make clean       清掉 _build' \
 	  '' \
-	  "变量： MOON=$(MOON)   TARGET=$(TARGET)   LOG=$(LOG)"
+	  '直接跑： $(RUN) <子命令>' \
+	  "变量： MOON=$(MOON)   FIX_CC=$(FIX_CC)"
 
 all: verify
 
-# bug lane 每跑一次就多一个 core，所以顺带报一下增量
-verify: bug workaround
+# .mbtx 的依赖（moonbitlang/async）要靠 registry 索引解析；全新环境里索引是空的，
+# 需要先同步一次。同步失败不致命 —— 可能离线，此时改用本地缓存继续。
+deps:
+	@$(MOON) update --quiet || echo "warn: moon update 失败（可能离线），改用本地缓存"
 
-bug:
-	@before=$$(./cases.sh corecount); \
-	 ./cases.sh lane bug; rc=$$?; \
-	 after=$$(./cases.sh corecount); \
-	 echo "  systemd core 计数: $$before -> $$after"; \
-	 exit $$rc
+verify: deps
+	@$(RUN) verify
 
-workaround:
-	@./cases.sh lane workaround
+bug: deps
+	@$(RUN) bug
 
-fixed:
-	@./cases.sh lane fixed
+workaround: deps
+	@$(RUN) workaround
 
-cases:
-	@./cases.sh list
+fixed: deps
+	@$(RUN) fixed
 
-cores:
-	@if ! command -v coredumpctl >/dev/null 2>&1; then echo '本机没有 coredumpctl，跳过'; exit 0; fi; \
-	 pid=$$(coredumpctl list --no-pager 2>/dev/null | grep '/\.moon/bin/moon' | tail -1 | awk '{print $$5}'); \
-	 if [ -z "$$pid" ]; then echo '没有 moon core 记录'; exit 0; fi; \
-	 echo "最近一次 moon core: pid=$$pid"; \
-	 coredumpctl info "$$pid" --no-pager 2>/dev/null | grep -E 'Signal:|Command Line:'; \
-	 echo '--- core 内 panic 文本 ---'; \
-	 tmp=$$(mktemp); \
-	 if coredumpctl dump "$$pid" -o "$$tmp" >/dev/null 2>&1; then \
-	   strings -n 8 "$$tmp" | grep -m1 'panicked at'; \
-	   strings -n 8 "$$tmp" | grep -m1 'failed printing'; \
-	 else \
-	   echo '(dump 失败，可能需要 sudo)'; \
-	 fi; \
-	 rm -f "$$tmp"
+cases: deps
+	@$(RUN) list
+
+diagnose: deps
+	@$(RUN) diagnose
 
 clean:
 	@rm -rf _build
-	@rm -f "$(LOG)"
-	@echo 'cleaned: _build $(LOG)'
+	@echo 'cleaned: _build'

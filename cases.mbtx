@@ -1,0 +1,276 @@
+///|
+import {
+  "moonbitlang/async@0.21.3",
+  "moonbitlang/async@0.21.3/process",
+  "moonbitlang/async@0.21.3/fs",
+  "moonbitlang/core/env",
+}
+
+///|
+/// moon 在 stderr 断管时 abort —— 用例集（原生管道，不用 shell 的 `|`）
+///
+///   moon run cases.mbtx                 跑 bug lane + workaround lane（= verify）
+///   moon run cases.mbtx -- bug          命中问题 lane
+///   moon run cases.mbtx -- workaround   绕过 lane
+///   moon run cases.mbtx -- fixed        修复验收 lane
+///   moon run cases.mbtx -- list         列出用例
+///   moon run cases.mbtx -- diagnose     打印环境证据
+///
+/// 复现机制：给子进程的 stdout/stderr 接一根管道，自己读几行，
+/// 然后把**读端关掉**（等价于 `| head -n N` 提前退出）。
+/// moon 下一次写 stderr 就拿到 EPIPE，Rust 的 eprintln! panic，
+/// 而二进制以 panic=abort 构建，于是 abort() -> SIGABRT -> exit 134。
+///
+/// 环境变量：MOON（moon 可执行文件，默认 $HOME/.moon/bin/moon）
+
+///|
+extern "c" fn c_exit(code : Int) = "exit"
+
+///|
+enum Mode {
+  ReadThenClose(Int) // 读 N 行后关掉读端
+  DrainAfter(Int) // 读 N 行后继续抽干
+  DrainAll // 直接抽干
+  Redirect // stderr 写文件
+}
+
+///|
+struct Case {
+  name : String
+  mode : Mode
+  expect : Int
+  desc : String
+}
+
+///|
+struct Ctx {
+  moon : String
+  home : String
+  extra : Map[String, String]
+  tmpdir : String
+}
+
+///|
+fn all_cases() -> Array[Case] {
+  [
+    { name: "head-1", mode: ReadThenClose(1), expect: 134, desc: "读 1 行后关读端（= | head -n 1）" },
+    { name: "head-3", mode: ReadThenClose(3), expect: 134, desc: "读 3 行后关读端（= | head -n 3）" },
+    { name: "drain-all", mode: DrainAll, expect: 0, desc: "读干（= | cat / | tail -n 5）" },
+    { name: "head-drain", mode: DrainAfter(3), expect: 0, desc: "读 3 行后继续抽干（推荐写法）" },
+    { name: "redirect", mode: Redirect, expect: 0, desc: "stderr 写文件（= > LOG 2>&1）" },
+  ]
+}
+
+///|
+fn env_or(key : String, fallback : String) -> String {
+  match @env.get_env_var(key) {
+    Some(v) => v
+    None => fallback
+  }
+}
+
+///|
+fn moon_exe() -> String {
+  env_or("MOON", env_or("HOME", "/root") + "/.moon/bin/moon")
+}
+
+///|
+fn pad(s : String, n : Int) -> String {
+  if s.length() >= n { s } else { s.pad_end(n, ' ') }
+}
+
+///|
+fn norm_exit(code : Int) -> Int {
+  if code < 0 { 128 - code } else { code }
+}
+
+///|
+/// 数一数 systemd 里 moon 的 core 有多少（做不到就返回 -1）
+async fn count_moon_cores() -> Int {
+  let mut tool = ""
+  for p in ["/usr/bin/coredumpctl", "/bin/coredumpctl"] {
+    if @fs.can_execute(p) { tool = p }
+  }
+  if tool == "" { return -1 }
+  let (code, out, _) = @process.collect_output(tool, ["list", "--no-pager"])
+  if code != 0 { return -1 }
+  let mut n = 0
+  for line in try! out.text().split("\n").collect() {
+    if line.contains("/.moon/bin/moon") { n = n + 1 }
+  }
+  n
+}
+
+///|
+/// 起一次 moon check，按 mode 决定怎么处理输出管道；返回 (退出码, 证据字符串)
+async fn run_case(c : Case, ctx : Ctx) -> (Int, String) {
+  match c.mode {
+    Redirect => {
+      let logpath = ctx.tmpdir + "/moon-stderr.log"
+      @async.with_task_group(async fn(group) {
+        let out = @process.redirect_to_file(logpath)
+        let p = @process.spawn(
+          group, ctx.moon, ["check", "--target", "native"],
+          extra_env=ctx.extra, inherit_env=false, stderr=out,
+        )
+        (norm_exit(p.wait()), "stderr 落盘 \{logpath}")
+      })
+    }
+    DrainAll =>
+      @async.with_task_group(async fn(group) {
+        (norm_exit(spawn_and_drain(group, ctx, 0)), "读干")
+      })
+    ReadThenClose(n) =>
+      @async.with_task_group(async fn(group) {
+        let (code, first) = spawn_and_read(group, ctx, n, true)
+        (code, "首行 \{first}")
+      })
+    DrainAfter(n) =>
+      @async.with_task_group(async fn(group) {
+        let (code, first) = spawn_and_read(group, ctx, n, false)
+        (code, "首行 \{first}，之后抽干")
+      })
+  }
+}
+
+///|
+/// 起 moon check，把 stdout/stderr 都接到一根管道的写端。
+/// 读 lines 行之后：close_early 为真就关掉读端，否则把剩下的抽干。
+async fn[G] spawn_and_read(
+  group : @async.TaskGroup[G],
+  ctx : Ctx,
+  lines : Int,
+  close_early : Bool,
+) -> (Int, String) {
+  let (reader, writer) = @process.read_from_process()
+  let p = @process.spawn(
+    group, ctx.moon, ["check", "--target", "native"],
+    extra_env=ctx.extra, inherit_env=false, stdout=writer, stderr=writer,
+  )
+  let mut first = ""
+  let mut i = 0
+  while i < lines {
+    match reader.read_until("\n") {
+      Some(line) => {
+        if i == 0 { first = line }
+      }
+      None => i = lines
+    }
+    i = i + 1
+  }
+  if close_early {
+    reader.close()
+  } else {
+    let _ = reader.read_all()
+  }
+  (norm_exit(p.wait()), first)
+}
+
+///|
+async fn[G] spawn_and_drain(group : @async.TaskGroup[G], ctx : Ctx, _lines : Int) -> Int {
+  let (reader, writer) = @process.read_from_process()
+  let p = @process.spawn(
+    group, ctx.moon, ["check", "--target", "native"],
+    extra_env=ctx.extra, inherit_env=false, stdout=writer, stderr=writer,
+  )
+  let _ = reader.read_all()
+  norm_exit(p.wait())
+}
+
+///|
+async fn run_lane(kind : String, ctx : Ctx) -> Int {
+  let mut fails = 0
+  match kind {
+    "bug" => println("命中问题 lane —— 期望 exit 134（128 + 6 SIGABRT）")
+    "workaround" => println("绕过 lane —— 期望 exit 0（读端不提前退出）")
+    "fixed" => println("修复验收 lane —— 期望不再 abort（上游修好后转 PASS）")
+    _ => ()
+  }
+  let cores_before = if kind == "bug" { count_moon_cores() } else { -1 }
+  for c in all_cases() {
+    let selected = match (kind, c.mode) {
+      ("bug", ReadThenClose(_)) => true
+      ("workaround", ReadThenClose(_)) => false
+      ("workaround", _) => true
+      ("fixed", ReadThenClose(1)) => true
+      (_, _) => false
+    }
+    if !selected { continue }
+    let (code, evidence) = run_case(c, ctx)
+    let want = if kind == "fixed" { 0 } else { c.expect }
+    let ok = code == want
+    let note = if ok { "PASS" } else if kind == "fixed" { "FAIL (仍 abort)" } else { "FAIL (期望 \{want})" }
+    println("  \{pad(c.name, 11)} exit=\{pad(code.to_string(), 4)} \{pad(note, 17)} \{c.desc}")
+    if !ok { fails = fails + 1 }
+    if evidence != "" { println("         \{evidence}") }
+  }
+  if core_before_ok(cores_before) {
+    let after = count_moon_cores()
+    println("  systemd core 计数: \{cores_before} -> \{after}")
+  }
+  fails
+}
+
+///|
+fn core_before_ok(n : Int) -> Bool { n >= 0 }
+
+///|
+fn list_cases() -> Unit {
+  println("\{pad("CASE", 11)} \{pad("EXPECT", 7)} 说明")
+  for c in all_cases() {
+    println("\{pad(c.name, 11)} \{pad(c.expect.to_string(), 7)} \{c.desc}")
+  }
+}
+
+///|
+async fn diagnose(ctx : Ctx) -> Unit {
+  println("moon      : \{ctx.moon}")
+  let (_, out, _) = @process.collect_output(ctx.moon, ["version"])
+  println("            \{try! out.text()}")
+  println("说明      : 当输出量超过管道缓冲、且读端先关闭时触发 EPIPE；")
+  println("            moon 二进制以 panic=abort 构建，于是 abort() → SIGABRT。")
+  println("复现不依赖并发或时序：只要输出量超过管道缓冲、且读端先关闭，就必现。")
+}
+
+///|
+async fn main {
+  let args = @env.args()
+  let cmd = if args.length() > 1 { args[1] } else { "verify" }
+
+  let tmpdir = @fs.tmpdir(prefix="bp-")
+  let ctx = {
+    moon: moon_exe(),
+    home: env_or("HOME", "/root"),
+    extra: { "PATH": env_or("PATH", "/usr/bin:/bin"), "HOME": env_or("HOME", "/root") },
+    tmpdir,
+  }
+
+  let fails = match cmd {
+    "list" => {
+      list_cases()
+      0
+    }
+    "diagnose" => {
+      diagnose(ctx)
+      0
+    }
+    "bug" => run_lane("bug", ctx)
+    "workaround" => run_lane("workaround", ctx)
+    "fixed" => run_lane("fixed", ctx)
+    "verify" => {
+      let a = run_lane("bug", ctx)
+      let b = run_lane("workaround", ctx)
+      if a + b == 0 { println("== 两条 lane 全部通过 ==") } else { println("== 有失败：\{a + b} 条 ==") }
+      a + b
+    }
+    _ => {
+      println("未知子命令：\{cmd}")
+      println("可用：bug | workaround | fixed | list | diagnose（不带参数 = verify）")
+      2
+    }
+  }
+  @fs.rmdir(tmpdir, recursive=true) catch {
+    _ => ()
+  }
+  c_exit(if fails == 0 { 0 } else { 1 })
+}
