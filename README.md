@@ -69,12 +69,12 @@ make cores      # 打印最近一次 moon core 的签名与 panic 文本
 | `workaround` | `make workaround` | exit 0 |
 | `upstream-fix-status` | `make fixed` | 不再 134（`continue-on-error`） |
 
-- 工具链默认装最新版；要钉版本用 `workflow_dispatch` 的 `moon_version` 输入
-  （内部走 `curl ... \| bash -s <version>`）。
-- 前两个 job 是硬断言：`hit-the-bug` 若是绿的，说明这个版本确实会 abort；
-  一旦上游修了，它会变红 —— 那就是撤掉 workaround 的信号。
+- 工具链一律装最新版，不钉版本 —— 上游要复现这个 bug 有的是办法，这里不必替他们固定环境。
+- 前两个 job 是硬断言：`hit-the-bug` 若是绿的，说明当前版本确实会 abort；
+  一旦上游修了它会变红 —— 那就是撤掉 workaround 的信号。
 - `upstream-fix-status` 反过来，允许失败，专门用来观察上游什么时候修好。
-- GitHub runner 上没有 systemd-coredump，所以只断言退出码，不检查 core。
+- runner 上也有 systemd-coredump：实测 `make bug` 会记到 core 增量（日志里
+  `systemd core 计数` 从 0 变 2）。断言本身只看退出码，core 只是佐证。
 
 ## 环境
 

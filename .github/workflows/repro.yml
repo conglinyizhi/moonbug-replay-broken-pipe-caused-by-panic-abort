@@ -1,19 +1,16 @@
 name: moon broken-pipe abort
 
 # 两条方案对应的 lane：
-#   hit-the-bug       命中问题  —— 断言 moon 在 EPIPE 下 abort（exit 134）
-#   workaround        绕过      —— 断言几种安全的调用方式都不会 abort（exit 0）
-#   upstream-fix-status 修复验收 —— 上游修好后转绿，用来判断何时撤掉 workaround
+#   hit-the-bug         命中问题  —— 断言 moon 在 EPIPE 下 abort（exit 134）
+#   workaround          绕过      —— 断言几种安全的调用方式都不会 abort（exit 0）
+#   upstream-fix-status 修复验收  —— 上游修好后转绿，用来判断何时撤掉 workaround
+#
+# 工具链一律装最新版，不钉版本。
 
 on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      moon_version:
-        description: 'MoonBit 工具链版本（留空 = 最新；例 0.1.20260907）'
-        required: false
-        default: ''
 
 jobs:
   hit-the-bug:
@@ -22,15 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 MoonBit 工具链
-        env:
-          PIN: ${{ github.event.inputs.moon_version }}
+      - name: 安装 MoonBit 工具链（最新版）
         run: |
-          if [ -n "${PIN:-}" ]; then
-            curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s "$PIN"
-          else
-            curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          fi
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
       - name: 记录工具链版本
@@ -45,15 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 MoonBit 工具链
-        env:
-          PIN: ${{ github.event.inputs.moon_version }}
+      - name: 安装 MoonBit 工具链（最新版）
         run: |
-          if [ -n "${PIN:-}" ]; then
-            curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s "$PIN"
-          else
-            curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          fi
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
       - name: 跑绕过 lane
@@ -66,15 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 MoonBit 工具链
-        env:
-          PIN: ${{ github.event.inputs.moon_version }}
+      - name: 安装 MoonBit 工具链（最新版）
         run: |
-          if [ -n "${PIN:-}" ]; then
-            curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s "$PIN"
-          else
-            curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          fi
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
       - name: 跑修复验收 lane
