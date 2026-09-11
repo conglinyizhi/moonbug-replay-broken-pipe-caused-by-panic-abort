@@ -84,22 +84,19 @@ fn norm_exit(code : Int) -> Int {
 }
 
 ///|
-/// 数一数 systemd 里 moon 的 core 有多少（做不到就返回 -1）
+/// 数一数 systemd 落盘的 moon core 有多少（拿不到就返回 -1）
+///
+/// 直接列 /var/lib/systemd/coredump 而不调 coredumpctl：后者在缺少 journal
+/// 访问权限等情况下会安静地什么都不输出，反而不如数文件稳。
 async fn count_moon_cores() -> Int {
-  let mut tool = ""
-  for p in ["/usr/bin/coredumpctl", "/bin/coredumpctl"] {
-    if @fs.can_execute(p) { tool = p }
+  let dir = "/var/lib/systemd/coredump"
+  if !@fs.exists(dir) { return -1 }
+  let names = @fs.readdir(dir) catch {
+    _ => return -1
   }
-  if tool == "" { return -1 }
-  // 不检查退出码：coredumpctl 在没有 journal 访问权限等情况下会返回非 0，
-  // 但只要它输出了记录清单就够用。真正拿不到输出时才当作不可用。
-  let (_, out, _) = @process.collect_output(tool, ["list", "--no-pager"])
-  let text = try! out.text()
-  if text.trim().length() == 0 { return -1 }
-  let lines = text.split("\n").collect()
   let mut n = 0
-  for line in lines {
-    if line.contains("/.moon/bin/moon") { n = n + 1 }
+  for name in names {
+    if name.contains(".moon.") { n = n + 1 }
   }
   n
 }
