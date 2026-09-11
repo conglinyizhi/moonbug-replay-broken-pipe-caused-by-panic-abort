@@ -4,7 +4,9 @@
 
 ### 原因
 
-`moon` 是 Rust 写的构建工具，而且**以 `panic = "abort"` 构建**。当它往 stderr 写输出、
+`moon` 是 Rust 写的构建工具，而且**以 `panic = "abort"` 构建** ——
+这条是实测的，不是推测：`moon` 没有链接 `libgcc_s`/`libunwind`（同机的 `rustc`、`cargo`
+都链接了），而且观测到的是 **SIGABRT** 而不是 Rust 默认的 `exit 101`。当它往 stderr 写输出、
 而管道读端已经退出时，会走成这样：
 
 1. `write` 返回 `EPIPE`
