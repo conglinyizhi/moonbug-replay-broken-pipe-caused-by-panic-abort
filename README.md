@@ -152,3 +152,13 @@ sudo rm /var/lib/systemd/coredump/core.moon.*
 moon 0.1.20260907 (7aabba5 2026-09-07)
 Linux x86-64, systemd-coredump
 ```
+
+### 相关上游 issue
+
+| issue | 关系 |
+|---|---|
+| [moonbitlang/moon#472](https://github.com/moonbitlang/moon/issues/472) `Panic with println on pipeline` | **同一类问题**（`failed printing to ... Broken pipe`，行号 `1118` = stdout，本仓库的是 `1165` = stderr）。2025-12-01 以 **stale 关闭，不是修复** —— 维护者原话：*"If this issue still exists, please reopen."* 本仓库就是「仍然存在」的证据 |
+| [moonbitlang/moon#852](https://github.com/moonbitlang/moon/issues/852) `Node in moon test/moon run changed stderr to non-blocking` | **不是同一条路径**。那条结的是 `EAGAIN`（os error 35，非阻塞），维护者当时的结论是 *"We can't fix it in moon itself"*。本仓库是 `EPIPE`（os error 32，断管）—— 这个在 moon 侧**可以**处理（显式处理写错误 / 装 panic hook / 忽略 EPIPE），两者不要混为一谈 |
+
+目标仓库：**[moonbitlang/moon](https://github.com/moonbitlang/moon)**（Rust 写的构建工具）。
+注意 `moonbitlang/moonbit-compiler` 的 issue 是**关闭**的，发不进去。
